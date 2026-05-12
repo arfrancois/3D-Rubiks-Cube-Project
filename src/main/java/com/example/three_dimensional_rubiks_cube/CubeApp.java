@@ -2,6 +2,7 @@ package com.example.three_dimensional_rubiks_cube;
 
 import javafx.animation.*;
 import javafx.application.Application;
+import javafx.concurrent.Task;
 import javafx.event.Event;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -31,6 +32,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Timer;
 
+import static com.example.three_dimensional_rubiks_cube.AISolver.*;
+
 public class CubeApp extends Application {
     private final Map<KeyCode, CubeMove> controls = new HashMap<>();
     //scenes
@@ -43,6 +46,7 @@ public class CubeApp extends Application {
     protected VBox optionsDrawer;
     protected VBox sideBar;
     protected MenuBar menuBar;
+    protected StackPane loadingOverlay;
     //cube state
     protected boolean firstFaceCompleted = false;
     protected int firstFaceCompletedMoves = -1;
@@ -193,9 +197,6 @@ public class CubeApp extends Application {
                         updateColors(allCubies, 'y', dir);
                         rotateOrientationY(dir);
                     }
-                    System.out.println("front: " + orientationMap.get('f'));
-                    System.out.println("right: " + orientationMap.get('r'));
-                    System.out.println("up: " + orientationMap.get('u'));
                 }
             }
         });
@@ -370,12 +371,6 @@ public class CubeApp extends Application {
      * @param cubeMove cube move performed
      */
     public void updateColorsCubeMove(CubeMove cubeMove) {
-        /*String oldState = "";
-        if (aiActive) {
-            oldState = AISolver.getStateString(this);
-        }
-
-         */
 
         record Colors(int x, int y, int z, Color u, Color d, Color f, Color b, Color r, Color l) {
         }
@@ -438,10 +433,6 @@ public class CubeApp extends Application {
             cubie.setFaceColor('l', allCubies.l);
         }
 
-        /*if (aiActive) {
-            aiSolver.updateQ(oldState, cubeMove, AISolver.getStateString(this));
-        }
-         */
     }
 
     private void initializeControls() {
@@ -825,13 +816,12 @@ public class CubeApp extends Application {
         positionCard.setStyle("-fx-background-color: #2b2b2b; -fx-background-radius: 8; -fx-padding: 15;");
 
         animationSpeedSlider.setShowTickLabels(true);
-        animationSpeedSlider.setMajorTickUnit(150);
+        animationSpeedSlider.setMajorTickUnit(animationSpeed);
         animationSpeedSlider.setStyle("-fx-tick-label-fill: white; -fx-font-size:15px;");
         animationSpeedSlider.setSnapToTicks(true);
         animationSpeedSlider.setShowTickMarks(true);
-        //animationSpeedSlider.setShowTickLabels(true);
 
-        Label animationSpeedTitle = new Label("Animation Speed: 150ms");
+        Label animationSpeedTitle = new Label("Animation Speed: " + animationSpeed + "ms");
         animationSpeedTitle.setTextFill(Color.WHITE);
         animationSpeedTitle.setStyle("-fx-font-weight: bold;");
         animationSpeedSlider.valueProperty().addListener((obs, oldVal, newVal) -> {
@@ -1339,6 +1329,47 @@ public class CubeApp extends Application {
         confettiEngine.start();
     }
 
+    private void showLoadingOverlay(Task<Void> task) {
+        loadingOverlay = new StackPane();
+        loadingOverlay.setStyle("-fx-background-color: rgba(0, 0, 0, 0.7);");
+
+        ProgressIndicator pi = new ProgressIndicator();
+        pi.setMaxSize(100, 100);
+        pi.progressProperty().bind(task.progressProperty());
+
+        Label statsLabel = new Label("0%");
+        statsLabel.setStyle("-fx-text-fill: lightblue; -fx-font-size: 24px; -fx-font-weight: bold;");
+        statsLabel.setTranslateY(80);
+
+        statsLabel.textProperty().bind(task.messageProperty());
+
+        Label trainingLabel = new Label("AI is training... Please wait.");
+        trainingLabel.setStyle("-fx-text-fill: white; -fx-font-size: 20px;");
+        trainingLabel.setTranslateY(120);
+
+        Button returnToCubeBtn = new Button("Background Training");
+        returnToCubeBtn.setCursor(Cursor.HAND);
+        returnToCubeBtn.setTranslateY(180);
+        returnToCubeBtn.setOnAction(e -> {
+            hideLoadingOverlay();
+        });
+
+        Button cancelBtn = new Button("Stop Training");
+        cancelBtn.setCursor(Cursor.HAND);
+        cancelBtn.setTranslateY(230);
+        cancelBtn.setOnAction(e -> {
+            aiSolver.stopTraining(); // See Step 3
+            hideLoadingOverlay();
+        });
+
+        loadingOverlay.getChildren().addAll(pi, statsLabel, trainingLabel, returnToCubeBtn, cancelBtn);
+        globalRoot.getChildren().add(loadingOverlay);
+    }
+
+    private void hideLoadingOverlay() {
+        globalRoot.getChildren().remove(loadingOverlay);
+    }
+
     private void addRoundOfConfetti() {
         for (int i = 0; i < 400; i++)
             pieces.add(new ConfettiPiece(confettiCanvas.getWidth(), confettiCanvas.getHeight()));
@@ -1383,7 +1414,7 @@ public class CubeApp extends Application {
             isMenuOpen = false;
             stopwatch.reset();
             stopwatch.startOrStop();
-
+            animationSpeed = 100;
         });
         countdown.play();
     }
@@ -1397,20 +1428,39 @@ public class CubeApp extends Application {
     public void startAISolver() {
         aiActive = true;
         aiSolver = new AISolver(this);
+        int numOfMovesToTrainFor = 5;
         if (!AISolver.hasTrained) {
             aiTraining = true;
             boolean stopwatchWasRunning = stopwatch.isRunning();
             if (stopwatchWasRunning) stopwatch.startOrStop();
 
             CubeApp.CubieState[][][] recordState = saveCubeState();
-            resetCube();
-            aiSolver.train(6);
-            restoreCube(recordState);
-            if (stopwatchWasRunning) stopwatch.startOrStop();
-            aiTraining = false;
+            initializeCubeState();
+            String solvedState = getStateString(this);
+            Task<Void> trainingTask = new Task<>() {
+                @Override
+                protected Void call() {
+                    aiSolver.train(numOfMovesToTrainFor, solvedState, (successRate, numMovesScrambled) -> {
+                        updateProgress(successRate, 100);
+                        updateMessage("Training Move: " + numMovesScrambled + " -> Success Rate: " + successRate + "%");
+                    });
+                    return null;
+                }
+            };
+            showLoadingOverlay(trainingTask);
+            trainingTask.setOnSucceeded(e -> {
+                restoreCube(recordState);
+                hideLoadingOverlay();
+                if (stopwatchWasRunning) stopwatch.startOrStop();
+                aiTraining = false;
+                triggerNextAIMove();
+
+            });
+            new Thread(trainingTask).start();
+        } else {
+            this.animationSpeed = 130;
+            triggerNextAIMove();
         }
-        this.animationSpeed = 130;
-        triggerNextAIMove();
     }
 
     protected void triggerNextAIMove() {
@@ -1418,7 +1468,7 @@ public class CubeApp extends Application {
             aiActive = false;
             return;
         }
-        CubeMove cubeMove = aiSolver.getNextMove(AISolver.getStateString(this));
+        CubeMove cubeMove = aiSolver.getNextMove(getStateString(this));
         if (cubeMove != null) rotateFace(cubeMove);
     }
 

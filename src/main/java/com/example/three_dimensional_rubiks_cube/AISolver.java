@@ -1,10 +1,14 @@
 package com.example.three_dimensional_rubiks_cube;
 
+import javafx.concurrent.Task;
 import javafx.scene.paint.Color;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Hashtable;
+import java.util.function.Consumer;
+
+import static com.example.three_dimensional_rubiks_cube.CubeApp.*;
 
 public class AISolver {
 
@@ -17,11 +21,12 @@ public class AISolver {
     public int moveCount = 0;
     protected CubeApp app;
     private boolean ignoreNewStates = false;
+    private volatile boolean shouldStopTraining = false;
 
     public AISolver(CubeApp app) {
         this.app = app;
         /*
-        CubeApp.CubieState[][][] recordState = saveCubeState();
+        CubieState[][][] recordState = saveCubeState();
         if (!hasTrained) train();
         restoreCube(recordState);
          */
@@ -98,7 +103,7 @@ public class AISolver {
      * @param move the move to hash
      * @return the int representation of the cube (ranging from 0-11
      */
-    protected static int hashCubeMove(CubeApp.CubeMove move) {
+    protected static int hashCubeMove(CubeMove move) {
         int axisOffset = switch (move.axis()) {
             case 'x' -> 0;
             case 'y' -> 4;
@@ -109,7 +114,7 @@ public class AISolver {
         return axisOffset + faceOffset + dirOffset;
     }
 
-    protected static CubeApp.CubeMove getCubeMove(int hashIndex) {
+    protected static CubeMove getCubeMove(int hashIndex) {
         char axis;
         switch (hashIndex / 4) {
             case 0 -> axis = 'x';
@@ -120,7 +125,7 @@ public class AISolver {
         int details = hashIndex % 4;
         int direction = details % 2 == 0 ? 1 : -1;
         int faceValue = details < 2 ? 1 : -1;
-        return new CubeApp.CubeMove(axis, faceValue, direction);
+        return new CubeMove(axis, faceValue, direction);
     }
 
     private static int hashedIndexBestMove(double[] moves) {
@@ -146,7 +151,7 @@ public class AISolver {
         return true;
     }
 
-    protected static String getNewState(String oldState, CubeApp.CubeMove move) {
+    protected static String getNewState(String oldState, CubeMove move) {
         StringBuilder newState = new StringBuilder(oldState);
         boolean cw = move.direction() == 1; //clockwise?
 
@@ -232,7 +237,7 @@ public class AISolver {
         return indexesDifferent.toString();
     }
 
-    public CubeApp.CubeMove getNextMove(String state) {
+    public CubeMove getNextMove(String state) {
         double[] moves;// = qTable.getOrDefault(state, new double[12]);
 
         if (!qTable.containsKey(state) && ignoreNewStates) {
@@ -261,7 +266,7 @@ public class AISolver {
      * @param move     the rotation move transformation from oldState to newState
      * @param newState the new state of the cube after having performed the rotation move
      */
-    public void updateQ(String oldState, CubeApp.CubeMove move, String newState) {
+    public void updateQ(String oldState, CubeMove move, String newState) {
         if (!qTable.containsKey(oldState)) {
             qTable.computeIfAbsent(oldState, (k) -> new double[12]);
         }
@@ -284,7 +289,11 @@ public class AISolver {
         return -.01; //decrement Q val a little bit every move until solved
     }
 
-    protected void train(int numOfMovesToTrainFor) {
+    public void stopTraining() {
+        this.shouldStopTraining = true;
+    }
+
+    protected void train(int numOfMovesToTrainFor, String solvedState, TrainingProgressListener listener) {
         int maxSteps = 7;
         int numMovesScrambled = 1;
         double epsilonDecay = 0.995;
@@ -292,15 +301,22 @@ public class AISolver {
         int successThreshold = 75; //only advance to next numMovesScrambled when successThreshold% accuracy reached
         String currentState;
         String newState;
-        CubeApp.CubeMove move;
+        CubeMove move;
         int ep;
-
-        app.initializeCubeState();
-        String solvedState = getStateString(app);
+        int largestCurRate = 0;
 
         for (ep = 0; numMovesScrambled <= numOfMovesToTrainFor; ep++) {
+            if (shouldStopTraining) {
+                System.out.println("Training aborted");
+                shouldStopTraining = false;
+                return;
+            }
             if (ep % checkInterval == 0 && ep > 0) {
                 int rate = getSuccessRate(solvedState, numMovesScrambled);
+                if (rate > largestCurRate) {
+                    listener.update(largestCurRate, numMovesScrambled);
+                    largestCurRate = rate;
+                }
                 System.out.println("Episode " + ep + " | Scramble " + numMovesScrambled + " | Success: " + rate + "/100");
                 if (rate >= successThreshold) {
                     numMovesScrambled++;
@@ -308,6 +324,7 @@ public class AISolver {
                     epsilon = 1.0;
                     checkInterval = 200 * numMovesScrambled;
                     successThreshold = Math.min(successThreshold + 5, 90);
+                    largestCurRate = 0;
                     System.out.println("Advancing to " + numMovesScrambled + " moves!");
                 }
             }
@@ -411,5 +428,9 @@ public class AISolver {
         return ret;
     }
 
+    @FunctionalInterface
+    public interface TrainingProgressListener {
+        void update(int successRate, int numMovesScrambled);
+    }
 
 }
